@@ -61,7 +61,9 @@ size_t streamReplyWithRangeFromConsumerPEL(client *c,
                                            streamID *start,
                                            streamID *end,
                                            size_t count,
-                                           streamConsumer *consumer);
+                                           streamCG *group,
+                                           streamConsumer *consumer,
+                                           streamPropInfo *spi);
 int streamParseStrictIDOrReply(client *c, robj *o, streamID *id, uint64_t missing_seq, int *seq_given);
 int streamParseIDOrReply(client *c, robj *o, streamID *id, uint64_t missing_seq);
 
@@ -1743,7 +1745,7 @@ size_t streamReplyWithRange(client *c,
      * the history of messages delivered to it and not yet confirmed
      * as delivered. */
     if (group && (flags & STREAM_RWR_HISTORY)) {
-        return streamReplyWithRangeFromConsumerPEL(c, s, start, end, count, consumer);
+        return streamReplyWithRangeFromConsumerPEL(c, s, start, end, count, group, consumer, spi);
     }
 
     char replyid[STREAM_ID_STR_LEN];
@@ -1867,7 +1869,9 @@ size_t streamReplyWithRangeFromConsumerPEL(client *c,
                                            streamID *start,
                                            streamID *end,
                                            size_t count,
-                                           streamConsumer *consumer) {
+                                           streamCG *group,
+                                           streamConsumer *consumer,
+                                           streamPropInfo *spi) {
     raxIterator ri;
     unsigned char startkey[sizeof(streamID)];
     unsigned char endkey[sizeof(streamID)];
@@ -1894,6 +1898,15 @@ size_t streamReplyWithRangeFromConsumerPEL(client *c,
             streamNACK *nack = ri.data;
             nack->delivery_time = commandTimeSnapshot();
             nack->delivery_count++;
+
+            /* Propagate the new delivery time and counter as XCLAIM, like
+             * we do when the entry is first delivered. Otherwise replicas
+             * and the AOF keep the old values. */
+            if (spi) {
+                robj *idarg = createObjectFromStreamID(&thisid);
+                streamPropagateXCLAIM(c, spi->keyname, group, spi->groupname, idarg, nack);
+                decrRefCount(idarg);
+            }
         }
         arraylen++;
     }
